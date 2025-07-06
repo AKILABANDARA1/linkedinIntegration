@@ -1,30 +1,40 @@
-# ---------- build stage -------------------------------------------------
-FROM python:3.12-slim AS base
+########## build stage #######################################################
+ARG PY_VERSION=3.12.4
+FROM python:${PY_VERSION}-slim-bookworm AS build
 
-WORKDIR /app
-
-# Install CA certificates (SSL fix) – build‑time only
+# Needed to compile some wheels (if any) — keep it slim
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
+    apt-get upgrade -y --no-install-recommends && \
+    apt-get install -y --no-install-recommends build-essential ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy & install Python deps
+WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --prefix=/install --no-cache-dir -r requirements.txt
 
-# Copy source
 COPY . .
 
-# Create an unprivileged user (UID/GID 10001)
-RUN groupadd -g 10001 appuser && \
-    useradd  -u 10001 -g appuser -s /bin/sh -m appuser
+########## final (runtime) stage #############################################
+# Start FROM the *same* Python tag so ABI matches, but we install nothing here.
+FROM python:${PY_VERSION}-slim-bookworm
 
-# Switch to the non‑root user for runtime
+# ── patch OS packages to latest security versions ───────────────────────────
+RUN apt-get update && \
+    apt-get upgrade -y --no-install-recommends && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ── copy site‑packages from build stage only (no compilers) ─────────────────
+COPY --from=build /install /usr/local
+COPY --from=build /app /app
+
+# ── create & switch to non‑root user (UID/GID 10001) ────────────────────────
+RUN groupadd -g 10001 appuser && \
+    useradd  -u 10001 -g appuser -s /usr/sbin/nologin -m appuser
 USER 10001
 
-EXPOSE 8080          # Flask UI port (adjust in app.py if you wish)
+WORKDIR /app
+EXPOSE 8080
 
-# Default command = Flask dashboard.
-# For the scheduled crawler, point Choreo's schedule to:
-#   python /app/fetch_high_cvss.py
+# Default command = Flask dashboard; override in Choreo schedule for crawler
 CMD ["python", "app.py"]
